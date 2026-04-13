@@ -1,0 +1,38 @@
+[
+  {
+    "id": "doc1",
+    "text": "门票一经售出，原则上不予退换。但在特殊情况下，如恶劣天气导致园区关闭，可在官方指引下进行改期或退款。",
+    "metadata": {
+      "source": "official_faq_v1.pdf",
+      "category": "退票政策",
+      "author": "Admin"
+    }
+  },
+  {
+    "id": "doc2",
+    "text": "购买“年卡”的用户，可以享受一年内多次入园的特权，并且在餐饮和购物时有折扣。",
+    "metadata": {
+      "source": "annual_pass_rules.docx",
+      "category": "会员权益",
+      "author": "MarketingDept"
+    }
+  },
+  {
+    "id": "doc3",
+    "text": "对于在线购买的门票，如果需要退票，必须在票面日期前48小时通过原购买渠道提交申请，并可能收取手续费。",
+    "metadata": {
+      "source": "online_policy.html",
+      "category": "退票政策",
+      "author": "E-commerceTeam"
+    }
+  },
+  {
+    "id": "doc4",
+    "text": "园区内的“碰碰车”项目因年度场地维护，将于下周暂停开放。",
+    "metadata": {
+      "source": "maintenance_notice.txt",
+      "category": "园区公告",
+      "author": "OpsDept"
+    }
+  }
+]
