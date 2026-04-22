@@ -83,8 +83,8 @@ launch_kernel_*.py
 *.jpg
 *.jpeg
 
-# Local large assets and private documents
-*.txt
+# Local text/data artifacts
+word2vec/three_kingdoms/
 *.docx
 *.doc
 *.xlsx
