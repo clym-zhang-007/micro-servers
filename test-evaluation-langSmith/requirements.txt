@@ -1,0 +1,19 @@
+# Core LangChain / LangGraph dependencies
+langchain>=1.1.0
+langchain-community>=0.4.0
+langchain-core>=1.1.0
+langgraph>=1.0.0
+langsmith>=0.1.0
+
+# Model provider and environment loading
+dashscope>=1.20.0
+python-dotenv>=1.0.1
+
+# Data validation and HTTP utilities
+pydantic>=2.7.0
+requests>=2.32.5
+
+# Optional evaluation framework used by deepeval_wealth_advisor.py
+deepeval>=2.0.0
+openai>=1.0.0
+pytest>=8.0.0
