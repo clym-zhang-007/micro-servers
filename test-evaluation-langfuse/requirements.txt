@@ -1,0 +1,5 @@
+dashscope==1.25.5
+qwen-agent==0.0.25
+langfuse==3.12.0
+pydantic==2.12.5
+python-dotenv==1.2.1
