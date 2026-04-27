@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 import asyncio
 from typing import Optional
 import dashscope
@@ -7,10 +8,9 @@ from qwen_agent.gui import WebUI
 import pandas as pd
 from sqlalchemy import create_engine
 from qwen_agent.tools.base import BaseTool, register_tool
-import matplotlib.pyplot as plt
-import io
-import base64
-import time
+
+# 加载 .env 环境变量
+load_dotenv()
 
 # 定义资源文件根目录
 ROOT_RESOURCE = os.path.join(os.path.dirname(__file__), 'resource')
@@ -20,36 +20,34 @@ dashscope.api_key = os.getenv('DASHSCOPE_API_KEY', '')  # 从环境变量获取 
 dashscope.timeout = 30  # 设置超时时间为 30 秒
 
 # ====== 门票助手 system prompt 和函数描述 ======
-system_prompt = """我是门票助手，以下是关于门票订单表相关的字段，我可能会编写对应的SQL，对数据进行查询
--- 门票订单表
-CREATE TABLE tkt_orders (
-    order_time DATETIME,             -- 订单日期
-    account_id INT,                  -- 预定用户ID
-    gov_id VARCHAR(18),              -- 商品使用人ID（身份证号）
-    gender VARCHAR(10),              -- 使用人性别
-    age INT,                         -- 年龄
-    province VARCHAR(30),           -- 使用人省份
-    SKU VARCHAR(100),                -- 商品SKU名
-    product_serial_no VARCHAR(30),  -- 商品ID
-    eco_main_order_id VARCHAR(20),  -- 订单ID
-    sales_channel VARCHAR(20),      -- 销售渠道
-    status VARCHAR(30),             -- 商品状态
-    order_value DECIMAL(10,2),       -- 订单金额
-    quantity INT                     -- 商品数量
-);
-一日门票，对应多种SKU：
-Universal Studios Beijing One-Day Dated Ticket-Standard
-Universal Studios Beijing One-Day Dated Ticket-Child
-Universal Studios Beijing One-Day Dated Ticket-Senior
-二日门票，对应多种SKU：
-USB 1.5-Day Dated Ticket Standard
-USB 1.5-Day Dated Ticket Discounted
-一日门票、二日门票查询
-SUM(CASE WHEN SKU LIKE 'Universal Studios Beijing One-Day%' THEN quantity ELSE 0 END) AS one_day_ticket_sales,
-SUM(CASE WHEN SKU LIKE 'USB%' THEN quantity ELSE 0 END) AS two_day_ticket_sales
-我将回答用户关于门票相关的问题
-
-每当 exc_sql 工具返回 markdown 表格和图片时，你必须原样输出工具返回的全部内容（包括图片 markdown），不要只总结表格，也不要省略图片。这样用户才能直接看到表格和图片。
+system_prompt = """我是门票助手，以下是关于门票订单表相关的字段，我可能会编写对应的SQL(运行环境是MySQL8.0)，对数据进行查询
+    -- 门票订单表
+    CREATE TABLE tkt_orders (
+        order_time DATETIME,             -- 订单日期
+        account_id INT,                  -- 预定用户ID
+        gov_id VARCHAR(18),              -- 商品使用人ID（身份证号）
+        gender VARCHAR(10),              -- 使用人性别
+        age INT,                         -- 年龄
+        province VARCHAR(30),           -- 使用人省份
+        SKU VARCHAR(100),                -- 商品SKU名
+        product_serial_no VARCHAR(30),  -- 商品ID
+        eco_main_order_id VARCHAR(20),  -- 订单ID
+        sales_channel VARCHAR(20),      -- 销售渠道
+        status VARCHAR(30),             -- 商品状态
+        order_value DECIMAL(10,2),       -- 订单金额
+        quantity INT                     -- 商品数量
+    );
+    一日门票，对应多种SKU：
+    Universal Studios Beijing One-Day Dated Ticket-Standard
+    Universal Studios Beijing One-Day Dated Ticket-Child
+    Universal Studios Beijing One-Day Dated Ticket-Senior
+    二日门票，对应多种SKU：
+    USB 1.5-Day Dated Ticket Standard
+    USB 1.5-Day Dated Ticket Discounted
+    一日门票、二日门票查询
+    SUM(CASE WHEN SKU LIKE 'Universal Studios Beijing One-Day%' THEN quantity ELSE 0 END) AS one_day_ticket_sales,
+    SUM(CASE WHEN SKU LIKE 'USB 1.5-Day Dated Ticket%' THEN quantity ELSE 0 END) AS two_day_ticket_sales
+    我将回答用户关于门票相关的问题
 """
 
 functions_desc = [
@@ -69,24 +67,13 @@ functions_desc = [
     },
 ]
 
-# ====== 会话隔离 DataFrame 存储 ======
-# 用于存储每个会话的 DataFrame，避免多用户数据串扰
-_last_df_dict = {}
-
-def get_session_id(kwargs):
-    """根据 kwargs 获取当前会话的唯一 session_id，这里用 messages 的 id"""
-    messages = kwargs.get('messages')
-    if messages is not None:
-        return id(messages)
-    return None
-
 # ====== exc_sql 工具类实现 ======
 @register_tool('exc_sql')
 class ExcSQLTool(BaseTool):
     """
-    SQL查询工具，执行传入的SQL语句并返回结果，并自动进行可视化。
+    SQL查询工具，执行传入的SQL语句并返回结果。
     """
-    description = '对于生成的SQL，进行SQL查询，并自动可视化'
+    description = '对于生成的SQL，进行SQL查询'
     parameters = [{
         'name': 'sql_input',
         'type': 'string',
@@ -96,58 +83,31 @@ class ExcSQLTool(BaseTool):
 
     def call(self, params: str, **kwargs) -> str:
         import json
-        import matplotlib.pyplot as plt
-        import io, os, time
         args = json.loads(params)
+        print('args=', args)
         sql_input = args['sql_input']
-        database = args.get('database', 'ubr')
+        database = args.get('database', os.getenv('DB_NAME', 'ubr'))
+        db_user = os.getenv('DB_USER')
+        db_password = os.getenv('DB_PASSWORD')
+        db_host = os.getenv('DB_HOST')
+        db_port = os.getenv('DB_PORT')
+        db_charset = os.getenv('DB_CHARSET', 'utf8mb4')
         engine = create_engine(
-            f'mysql+mysqlconnector://student123:student321@rm-uf6z891lon6dxuqblqo.mysql.rds.aliyuncs.com:3306/{database}?charset=utf8mb4',
+            f'mysql+mysqlconnector://{db_user}:{db_password}@{db_host}:{db_port}/{database}?charset={db_charset}',
             connect_args={'connect_timeout': 10}, pool_size=10, max_overflow=20
         )
         try:
             df = pd.read_sql(sql_input, engine)
-            md = df.head(10).to_markdown(index=False)
-            # 自动推断x/y字段
-            x_candidates = df.select_dtypes(include=['object']).columns.tolist()
-            if not x_candidates:
-                x_candidates = df.columns.tolist()
-            x = x_candidates[0]
-            y_candidates = df.select_dtypes(include=['number']).columns.tolist()
-            y_fields = y_candidates
-            # 绘制柱状图
-            plt.figure(figsize=(8, 5))
-            bar_width = 0.35 if len(y_fields) > 1 else 0.6
-            x_labels = df[x].astype(str)
-            x_pos = range(len(df))
-            for idx, y_col in enumerate(y_fields):
-                plt.bar([p + idx * bar_width for p in x_pos], df[y_col], width=bar_width, label=y_col)
-            plt.xlabel(x)
-            plt.ylabel(','.join(y_fields))
-            plt.title(f"{' & '.join(y_fields)} by {x}")
-            plt.xticks([p + bar_width * (len(y_fields) - 1) / 2 for p in x_pos], x_labels, rotation=45, ha='right')
-            plt.legend()
-            plt.tight_layout()
-            # 自动创建目录
-            save_dir = os.path.join(os.path.dirname(__file__), 'image_show')
-            os.makedirs(save_dir, exist_ok=True)
-            # 生成唯一文件名
-            filename = f'bar_{int(time.time() * 1000)}.png'
-            save_path = os.path.join(save_dir, filename)
-            plt.savefig(save_path)
-            plt.close()
-            img_path = str(save_path).replace('\\', '/')
-            print('img_path=', img_path)
-            img_md = f'![柱状图]({img_path})'
-            return f"{md}\n\n{img_md}"
+            # 返回前10行，防止数据过多
+            return df.head(10).to_markdown(index=False)
         except Exception as e:
-            return f"SQL执行或可视化出错: {str(e)}"
+            return f"SQL执行出错: {str(e)}"
 
 # ====== 初始化门票助手服务 ======
 def init_agent_service():
     """初始化门票助手服务"""
     llm_cfg = {
-        'model': 'qwen-turbo-2025-04-28',
+        'model': 'qwen-turbo-latest',
         'timeout': 30,
         'retry_count': 3,
     }
@@ -157,7 +117,7 @@ def init_agent_service():
             name='门票助手',
             description='门票查询与订单分析',
             system_message=system_prompt,
-            function_list=['exc_sql'],  # 移除绘图工具
+            function_list=['exc_sql'],  # 只传工具名字符串
         )
         print("助手初始化成功！")
         return bot

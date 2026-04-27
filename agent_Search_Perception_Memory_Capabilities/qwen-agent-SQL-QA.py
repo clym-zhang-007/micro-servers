@@ -1,17 +1,49 @@
+# -*- coding: utf-8 -*-
+"""门票查询助手 - 基于 Qwen Agent 的 SQL 查询与数据可视化工具
+
+功能特性:
+    - 自然语言转 SQL：用户用中文提问，模型自动生成对应的 SQL 查询语句
+    - MySQL 数据库查询：通过 exc_sql 工具连接远程 MySQL 数据库执行查询
+    - 自动数据可视化：根据查询结果自动生成堆积柱状图
+    - Markdown 表格展示：查询结果以表格形式返回，支持 WebUI 渲染
+    - 支持 WebUI 图形界面和终端 (TUI) 两种交互模式
+
+数据源:
+    - MySQL 数据库：rm-uf6z891lon66dxuqblqo.mysql.rds.aliyuncs.com:3306/ubr
+    - 核心表：tkt_orders（门票订单表）
+
+典型使用场景:
+    - 查询指定时间段的一日票/二日票销量
+    - 按省份、渠道、状态等维度统计入园人数
+    - 订单金额排名分析
+
+依赖:
+    - qwen_agent, dashscope
+    - pandas, sqlalchemy, mysql-connector-python
+    - matplotlib, numpy
+
+运行方式:
+    - 直接运行: python assistant_ticket_bot-3.py (默认启动 WebUI)
+    - 环境变量: 需设置 DASHSCOPE_API_KEY
+"""
 import os
 import asyncio
 from typing import Optional
+from dotenv import load_dotenv
 import dashscope
 from qwen_agent.agents import Assistant
 from qwen_agent.gui import WebUI
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from qwen_agent.tools.base import BaseTool, register_tool
 import matplotlib.pyplot as plt
 import io
 import base64
 import time
 import numpy as np
+
+# 加载 .env 环境变量
+load_dotenv()
 
 # 解决中文显示问题
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun', 'Arial Unicode MS']  # 优先使用的中文字体
@@ -26,35 +58,35 @@ dashscope.timeout = 30  # 设置超时时间为 30 秒
 
 # ====== 门票助手 system prompt 和函数描述 ======
 system_prompt = """我是门票助手，以下是关于门票订单表相关的字段，我可能会编写对应的SQL，对数据进行查询
-    -- 门票订单表
-    CREATE TABLE tkt_orders (
-        order_time DATETIME,             -- 订单日期
-        account_id INT,                  -- 预定用户ID
-        gov_id VARCHAR(18),              -- 商品使用人ID（身份证号）
-        gender VARCHAR(10),              -- 使用人性别
-        age INT,                         -- 年龄
-        province VARCHAR(30),           -- 使用人省份
-        SKU VARCHAR(100),                -- 商品SKU名
-        product_serial_no VARCHAR(30),  -- 商品ID
-        eco_main_order_id VARCHAR(20),  -- 订单ID
-        sales_channel VARCHAR(20),      -- 销售渠道
-        status VARCHAR(30),             -- 商品状态
-        order_value DECIMAL(10,2),       -- 订单金额
-        quantity INT                     -- 商品数量
-    );
-    一日门票，对应多种SKU：
-    Universal Studios Beijing One-Day Dated Ticket-Standard
-    Universal Studios Beijing One-Day Dated Ticket-Child
-    Universal Studios Beijing One-Day Dated Ticket-Senior
-    二日门票，对应多种SKU：
-    USB 1.5-Day Dated Ticket Standard
-    USB 1.5-Day Dated Ticket Discounted
-    一日门票、二日门票查询
-    SUM(CASE WHEN SKU LIKE 'Universal Studios Beijing One-Day%' THEN quantity ELSE 0 END) AS one_day_ticket_sales,
-    SUM(CASE WHEN SKU LIKE 'USB%' THEN quantity ELSE 0 END) AS two_day_ticket_sales
-    我将回答用户关于门票相关的问题
+-- 门票订单表
+CREATE TABLE tkt_orders (
+    order_time DATETIME,             -- 订单日期
+    account_id INT,                  -- 预定用户ID
+    gov_id VARCHAR(18),              -- 商品使用人ID（身份证号）
+    gender VARCHAR(10),              -- 使用人性别
+    age INT,                         -- 年龄
+    province VARCHAR(30),           -- 使用人省份
+    SKU VARCHAR(100),                -- 商品SKU名
+    product_serial_no VARCHAR(30),  -- 商品ID
+    eco_main_order_id VARCHAR(20),  -- 订单ID
+    sales_channel VARCHAR(20),      -- 销售渠道
+    status VARCHAR(30),             -- 商品状态
+    order_value DECIMAL(10,2),       -- 订单金额
+    quantity INT                     -- 商品数量
+);
+一日门票，对应多种SKU：
+Universal Studios Beijing One-Day Dated Ticket-Standard
+Universal Studios Beijing One-Day Dated Ticket-Child
+Universal Studios Beijing One-Day Dated Ticket-Senior
+二日门票，对应多种SKU：
+USB 1.5-Day Dated Ticket Standard
+USB 1.5-Day Dated Ticket Discounted
+一日门票、二日门票查询
+SUM(CASE WHEN SKU LIKE 'Universal Studios Beijing One-Day%' THEN quantity ELSE 0 END) AS one_day_ticket_sales,
+SUM(CASE WHEN SKU LIKE 'USB%' THEN quantity ELSE 0 END) AS two_day_ticket_sales
+我将回答用户关于门票相关的问题
 
-    每当 exc_sql 工具返回 markdown 表格和图片时，你必须原样输出工具返回的全部内容（包括图片 和 markdown表格），不要只总结表格，也不要省略图片。这样用户才能直接看到表格和图片。
+每当 exc_sql 工具返回 markdown 表格和图片时，你必须原样输出工具返回的全部内容（包括图片 markdown），不要只总结表格，也不要省略图片。这样用户才能直接看到表格和图片。
 """
 
 functions_desc = [
@@ -104,66 +136,70 @@ class ExcSQLTool(BaseTool):
         import matplotlib.pyplot as plt
         import io, os, time
         import numpy as np
-        from sqlalchemy import text  # 导入text类型用于处理原生SQL
         args = json.loads(params)
         sql_input = args['sql_input']
-        print('sql_input=', sql_input)
-        database = args.get('database', 'ubr')
-        
+        database = args.get('database', os.getenv('DB_NAME', 'ubr'))
+        db_user = os.getenv('DB_USER')
+        db_password = os.getenv('DB_PASSWORD')
+        db_host = os.getenv('DB_HOST')
+        db_port = os.getenv('DB_PORT')
+        db_charset = os.getenv('DB_CHARSET', 'utf8mb4')
         engine = create_engine(
-            f'mysql+pymysql://student123:student321@rm-uf6z891lon6dxuqblqo.mysql.rds.aliyuncs.com:3306/{database}?charset=utf8mb4',
+            f'mysql+mysqlconnector://{db_user}:{db_password}@{db_host}:{db_port}/{database}?charset={db_charset}',
             connect_args={'connect_timeout': 10}, pool_size=10, max_overflow=20
         )
-        # 使用 SQLAlchemy 的 text() 包装 SQL 语句，避免格式化问题
-        df = pd.read_sql(text(sql_input), engine)
-        print('df=', df)
-        md = df.head(10).to_markdown(index=False)
-        # 自动创建目录
-        save_dir = os.path.join(os.path.dirname(__file__), 'image_show')
-        os.makedirs(save_dir, exist_ok=True)
-        filename = f'bar_{int(time.time() * 1000)}.png'
-        save_path = os.path.join(save_dir, filename)
-        # 生成图表
-        generate_chart_png(df, save_path)
-        img_path = str(save_path).replace('\\', '/')
-        print('img_path=', img_path)
-        img_md = f'![柱状图]({img_path})'
-        return f"{md}\n\n{img_md}"
+        try:
+            df = pd.read_sql(sql_input, engine) # 根据sql查表
+            md = df.head(10).to_markdown(index=False)
+            # 自动创建目录
+            save_dir = os.path.join(os.path.dirname(__file__), 'image_show')
+            os.makedirs(save_dir, exist_ok=True)
+            filename = f'bar_{int(time.time()*1000)}.png'
+            save_path = os.path.join(save_dir, filename)
+            # 生成图表
+            generate_chart_png(df, save_path)
+            img_path = os.path.join('image_show', filename)
+            img_md = f'![柱状图]({img_path})'
+            return f"{md}\n\n{img_md}"
+        except Exception as e:
+            return f"SQL执行或可视化出错: {str(e)}"
 
-# ========== 通用可视化函数 ==========
+# ========== 通用可视化函数 ========== 
 def generate_chart_png(df_sql, save_path):
-    plt.figure(figsize=(12, 6))
-
-    string_columns = df_sql.select_dtypes(include=['object']).columns.tolist()
-    numeric_columns = df_sql.select_dtypes(include=['number']).columns.tolist()
-
-    if not numeric_columns:
-        raise ValueError('查询结果中没有可用于绘图的数值列')
-
-    preferred_x = None
-    for candidate in ['week_number', 'week', 'month']:
-        if candidate in df_sql.columns:
-            preferred_x = candidate
-            break
-    if preferred_x is None:
-        preferred_x = string_columns[0] if string_columns else df_sql.columns[0]
-
-    x_labels = df_sql[preferred_x].astype(str).tolist()
-    x_positions = np.arange(len(df_sql))
-
-    if len(numeric_columns) == 1:
-        plt.bar(x_positions, df_sql[numeric_columns[0]], width=0.6, label=numeric_columns[0])
+    columns = df_sql.columns
+    x = np.arange(len(df_sql))
+    # 获取object类型
+    object_columns = df_sql.select_dtypes(include='O').columns.tolist()
+    if columns[0] in object_columns:
+        object_columns.remove(columns[0])
+    num_columns = df_sql.select_dtypes(exclude='O').columns.tolist()
+    if len(object_columns) > 0:
+        # 对数据进行透视，以便为每个日期和销售渠道创建堆积柱状图
+        pivot_df = df_sql.pivot_table(index=columns[0], columns=object_columns, 
+                                      values=num_columns, 
+                                      fill_value=0)
+        # 绘制堆积柱状图
+        fig, ax = plt.subplots(figsize=(10, 6))
+        # 为每个销售渠道和票类型创建柱状图
+        bottoms = None
+        for col in pivot_df.columns:
+            ax.bar(pivot_df.index, pivot_df[col], bottom=bottoms, label=str(col))
+            if bottoms is None:
+                bottoms = pivot_df[col].copy()
+            else:
+                bottoms += pivot_df[col]
     else:
-        bar_width = 0.8 / len(numeric_columns)
-        for idx, column in enumerate(numeric_columns):
-            offset = (idx - (len(numeric_columns) - 1) / 2) * bar_width
-            plt.bar(x_positions + offset, df_sql[column], width=bar_width, label=column)
-
-    plt.xticks(x_positions, x_labels, rotation=45, ha='right')
+        print('进入到else...')
+        bottom = np.zeros(len(df_sql))
+        for column in columns[1:]:
+            plt.bar(x, df_sql[column], bottom=bottom, label=column)
+            bottom += df_sql[column]
+        plt.xticks(x, df_sql[columns[0]])
     plt.legend()
-    plt.title('销售统计')
-    plt.xlabel(preferred_x)
-    plt.ylabel('门票数量')
+    plt.title("销售统计")
+    plt.xlabel(columns[0])
+    plt.ylabel("门票数量")
+    plt.xticks(rotation=45)
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
@@ -172,7 +208,7 @@ def generate_chart_png(df_sql, save_path):
 def init_agent_service():
     """初始化门票助手服务"""
     llm_cfg = {
-        'model': 'qwen-turbo',  # 修正模型名称，避免日期格式问题
+        'model': 'qwen-turbo-2025-04-28',
         'timeout': 30,
         'retry_count': 3,
     }
@@ -182,7 +218,7 @@ def init_agent_service():
             name='门票助手',
             description='门票查询与订单分析',
             system_message=system_prompt,
-            function_list=['exc_sql', 'code_interpreter'],  # 移除绘图工具
+            function_list=['exc_sql'],
         )
         print("助手初始化成功！")
         return bot
@@ -263,3 +299,4 @@ def app_gui():
 if __name__ == '__main__':
     # 运行模式选择
     app_gui()          # 图形界面模式（默认）
+    
