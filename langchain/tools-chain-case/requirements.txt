@@ -1,0 +1,5 @@
+dashscope>=1.22.1
+langchain>=1.0.3
+langchain-core>=1.0.1
+langchain-community>=0.4
+langgraph>=1.1.9
